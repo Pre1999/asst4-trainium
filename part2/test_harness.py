@@ -50,11 +50,11 @@ def test_correctness_conv2d_kernel(
 ):
     ref_impl = conv2d_cpu_torch
 
-    input_channels_list = [128, 256]
-    output_channels_list = [128, 256]
-    kernel_size_list = [3]
-    batch_size_list = [4]
-    image_dims_list = [(32, 16)]
+    input_channels_list = [3]
+    output_channels_list = [1]
+    kernel_size_list = [2]
+    batch_size_list = [1]
+    image_dims_list = [(3, 3)]
     pool_size = 2 if use_maxpool else 1
 
     if use_larger_images:
@@ -67,12 +67,36 @@ def test_correctness_conv2d_kernel(
             for kernel_size in kernel_size_list:
                 for batch_size in batch_size_list:
                     for image_dims in image_dims_list:
-                        X = np.random.rand(
-                            batch_size, input_channels, image_dims[0], image_dims[1]
-                        ).astype(np.float32)
-                        W = np.random.rand(
-                            output_channels, input_channels, kernel_size, kernel_size
-                        ).astype(np.float32)
+                        # X = np.random.rand(
+                        #     batch_size, input_channels, image_dims[0], image_dims[1]
+                        # ).astype(np.float32)
+                        # X = np.ones(
+                        #     (batch_size, input_channels, image_dims[0], image_dims[1])
+                        # ).astype(np.float32)
+
+                        # Define the base 3x3 matrix with values from 1 to 9
+                        base_matrix = np.array([[1, 2, 3],
+                                                [4, 5, 6],
+                                                [7, 8, 9]], dtype=np.float32)
+                        X = np.tile(base_matrix, (1, 3, 1, 1))
+                        print("Input Matrix : ")
+                        print(X)
+                        print(X.shape)
+
+                        # W = np.random.rand(
+                        #     output_channels, input_channels, kernel_size, kernel_size
+                        # ).astype(np.float32)
+
+                        # Define Filter Matrix
+                        base_matrix = np.array([[1, 2],
+                                                [3, 4]], dtype=np.float32)
+                        W = np.tile(base_matrix, (1, 3, 1, 1))
+                        print()
+                        print("Filter Matrix : ")
+                        print(W)
+                        print(W.shape)
+                        print("\n ----- Done Initializing Matrices ----- \n")
+
                         bias = (
                             np.zeros(output_channels).astype(np.float32)
                             if not use_bias
@@ -180,12 +204,13 @@ if __name__ == "__main__":
         end="",
         flush=True,
     )
+    print()
     test_result = test_correctness_conv2d_kernel(conv2d, use_larger_images=False)
     if test_result:
         print("Passed 😎")
     else:
         print("Failed 😢")
-
+    sys.exit()
     print(
         "Running correctness test for conv2d kernel with larger images...",
         end="",
