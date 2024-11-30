@@ -7,7 +7,7 @@ import neuronxcc.nki.isa as nisa
 from neuronxcc.nki import baremetal
 from neuronxcc.nki import benchmark
 
-from conv2d import fused_conv2d_maxpool as conv2d
+from conv2d import fused_conv2d_maxpool_cpu as conv2d
 
 from conv2d_numpy import conv2d_cpu_torch
 import logging
@@ -51,7 +51,7 @@ def test_correctness_conv2d_kernel(
     ref_impl = conv2d_cpu_torch
 
     input_channels_list = [3]
-    output_channels_list = [1]
+    output_channels_list = [2]
     kernel_size_list = [2]
     batch_size_list = [1]
     image_dims_list = [(3, 3)]
@@ -78,10 +78,10 @@ def test_correctness_conv2d_kernel(
                         base_matrix = np.array([[1, 2, 3],
                                                 [4, 5, 6],
                                                 [7, 8, 9]], dtype=np.float32)
-                        X = np.tile(base_matrix, (1, 3, 1, 1))
+                        X = np.tile(base_matrix, (2, 3, 1, 1))
                         print("Input Matrix : ")
                         print(X)
-                        print(X.shape)
+                        print("\nShape : ", X.shape)
 
                         # W = np.random.rand(
                         #     output_channels, input_channels, kernel_size, kernel_size
@@ -90,11 +90,28 @@ def test_correctness_conv2d_kernel(
                         # Define Filter Matrix
                         base_matrix = np.array([[1, 2],
                                                 [3, 4]], dtype=np.float32)
-                        W = np.tile(base_matrix, (1, 3, 1, 1))
+                        W = np.tile(base_matrix, (2, 3, 1, 1))
+
+                        # Define a single channel for Output Channel 1
+                        # channel1 = np.array([[1., 2.],
+                        #                     [3., 4.]])
+
+                        # # Define a single channel for Output Channel 2
+                        # channel2 = np.array([[5., 6.],
+                        #                     [7., 8.]])
+
+                        # # Stack three copies of channel1 for Input Channels of Output Channel 1
+                        # output_channel1 = np.stack([channel1] * 3)
+
+                        # # Stack three copies of channel2 for Input Channels of Output Channel 2
+                        # output_channel2 = np.stack([channel2] * 3)
+
+                        # Combine the two output channels
+                        # W = np.stack([output_channel1, output_channel2])
                         print()
                         print("Filter Matrix : ")
                         print(W)
-                        print(W.shape)
+                        print("\nShape : ", W.shape)
                         print("\n ----- Done Initializing Matrices ----- \n")
 
                         bias = (
@@ -108,6 +125,8 @@ def test_correctness_conv2d_kernel(
 
                         out = kernel(*args, **kwargs)
                         out_ref = ref_impl(*args, **kwargs)
+                        
+                        print("Shapes of output : ", out.shape, " | Ref Shape : ", out_ref.shape)
 
                         if not np.allclose(out, out_ref):
                             print(

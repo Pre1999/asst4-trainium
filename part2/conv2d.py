@@ -7,6 +7,24 @@ import neuronxcc.nki.isa as nisa
 from neuronxcc.nki import baremetal
 
 
+# @nki.jit
+def shift(input, input_shifted, i, j, X_shape, W_shape, out_shape):
+    batch_size, in_channels, input_height, input_width = X_shape
+    out_channels, in_channels_, filter_height, filter_width = W_shape
+    _, _, out_height, out_width = out_shape
+    
+    shift_idx = 0
+
+    for x in range(i, input_height - filter_height + i + 1):
+        for y in range(j, input_width - filter_width + j + 1):
+            flattened_idx = x * input_width + y
+            input_shifted[shift_idx] = input[flattened_idx]
+            # nl.device_print("Printing Here123:", x=input[flattened_idx])
+            shift_idx += 1
+
+    # return input_shifted
+
+
 """
 A fused convolution - maxpool kernel that you need to implement for Part 2.
 
@@ -74,7 +92,25 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
 
     # Reshape input and weight to align for matrix multiplication
     # input =  X.reshape((batch_size, input_height * input_width, in_channels))
-    weight = W.reshape((filter_height, filter_width, in_channels, out_channels))
+    input =  X.reshape((batch_size, in_channels, input_height * input_width))
+    # weight = W.reshape((filter_height, filter_width, in_channels, out_channels))
+    weight = W.reshape((1, out_channels, in_channels, filter_height * filter_width))
+
+    # Transpose axes
+    # transposed_matrix = nl.transpose(X, (0, 2, 3, 1))
+    # print("Transposed Matrix : ")
+    # my_print(transposed_matrix)
+
+    # Initialize input_shifted array
+    input_shifted = nl.ndarray(
+        shape=(out_height * out_width, in_channels),
+        dtype=input.dtype,
+        buffer=nl.sbuf,
+    )
+
+    # wt_tile = nl.ndarray((1, out_channels, in_channels, filter_height * filter_width), dtype=weight.dtype, buffer=nl.sbuf)
+    # wt_tile = nl.load(weight)
+    # wt_tile_transpose = nl.transpose(wt_tile)
 
     # Process the images in batches
     for b in nl.affine_range(batch_size):
@@ -87,15 +123,39 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
             for j in range(filter_width):
 
                 # Shift the Input tensor by (i, j) to align with the filter's current position
-                # input_shifted = shift(input, i, j, filter_height, filter_width)
+                # input_shifted = shift(input, input_shifted, i, j, X.shape, W.shape, X_out.shape)
+                # shift(input[b], input_shifted, i, j, X.shape, W.shape, X_out.shape)
 
                 input = X[b:b+1, :, i : input_height - filter_height + i + 1, j : input_width - filter_width + j + 1]
 
-                print("Here : ", input.shape)
-                my_print(input)
-                # input_shifted = nl.reshape(input, (out_width * out_height, in_channels))
-                # input_shifted = X_reshaped[b:b+1, :, i : input_height - filter_height + i + 1, j : input_width - filter_width + j + 1].reshape((out_width * out_height, in_channels))
-                # input_shifted = X.reshape((1, 1, out_width * out_height, in_channels))
+                # transposed_matrix = nl.transpose(X, (0, 2, 3, 1))
+
+                print("Input_reshaped shape : ", input.shape)
+                input_reshaped = input.reshape((1,1,4,3))
+                # print(type(input[b]))
+                # name = "Input Reshaped : "
+                # my_print(input[b], name)
+                
+                # print("Weight_reshaped shape : ", weight[0, :, :, i * filter_width + j].shape)
+                # print(type(weight), weight.dtype)
+                # name = "Filter Reshaped : "
+                # my_print(nl.transpose(weight[0, :, :, i * filter_width + j]), name)
+
+                # wt_tile = nl.ndarray((out_channels, in_channels), dtype=weight.dtype, buffer=nl.sbuf)
+
+                # sliced_weight = weight[0, :, :, i * filter_width + j]
+                # sliced_weight_copy = nl.ndarray(shape=sliced_weight.shape, dtype=sliced_weight.dtype, buffer=nl.hbm)
+                # sliced_weight_copy[...] = sliced_weight
+
+                # wt_tile = nl.load(sliced_weight)
+
+                # wt_tile_transpose = nl.transpose(wt_tile)
+
+                # my_print(wt_tile_transpose, name)
+
+
+                # input_shifted = input.reshape((1, 1, out_width * out_height, in_channels))
+                # input_shifted[:] = input
 
                 # Perform matrix multiplication between the input and the weights from the filter slice
                 # X_out[b] += nl.matmul(input_shifted, weight[i, j, :, :])
@@ -111,8 +171,9 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
 
     return X_out
 
-def my_print(input):
-    nl.device_print("Printing Here:", x=input)
+def my_print(input, name):
+    nl.device_print(f"{name}", x=input[0, 0, 0, 0])
+    nl.device_print("", x=input)
     # b_, c_, h_, w_ = input.shape
     # for b in range(b_):
     #     for c in range(c_):
@@ -122,4 +183,103 @@ def my_print(input):
     #             nl.device_print(x=row)
     #         nl.device_print("---")
     # nl.device_print("\n --- Next Batch ---\n")
-            
+
+
+############################################## CPU Implementation ##############################################
+
+def shift_cpu(input, input_shifted, i, j, X_shape, W_shape):
+    batch_size, in_channels, input_height, input_width = X_shape
+    out_channels, in_channels_, filter_height, filter_width = W_shape
+    
+    shift_idx = 0
+
+    for x in range(i, input_height - filter_height + i + 1):
+        for y in range(j, input_width - filter_width + j + 1):
+            flattened_idx = x * input_width + y
+            input_shifted[shift_idx] = input[flattened_idx]
+            shift_idx += 1
+    
+    return input_shifted
+
+def fused_conv2d_maxpool_cpu(X, W, bias, pool_size=1):
+    batch_size, in_channels, input_height, input_width = X.shape
+    out_channels, in_channels_, filter_height, filter_width = W.shape
+    out_channels_ = bias.shape[0]
+
+    assert (
+        in_channels_ == in_channels and out_channels_ == out_channels
+    ), f"Shape mismatch. {in_channels}, {in_channels_}, {out_channels}, {out_channels_}"
+
+    out_height = input_height - filter_height + 1
+    out_width = input_width - filter_width + 1
+
+    out_pool_height = out_height // pool_size
+    out_pool_width = out_width // pool_size
+
+    # Reshape input and weight to align for matrix multiplication
+    input = X.reshape((batch_size, in_channels, input_height * input_width))
+    transposed_X = np.transpose(input, (0, 2, 1))
+    
+    weight = W.reshape((out_channels, in_channels, filter_height * filter_width))
+    transposed_W = np.transpose(weight, (0, 2, 1))
+    
+    print("Transposed X : ")
+    print(transposed_X)
+    print("Shape : ", transposed_X.shape)
+    print()
+
+    print("Transposed W : ")
+    print(transposed_W)
+    print("Shape : ", transposed_W.shape)
+    print()
+
+    # Initialize Output with zeros
+    output = np.zeros([batch_size, out_height * out_width, out_channels])
+
+    input_shifted = np.zeros([out_height * out_width, in_channels])
+
+    print("\n----------------- Begin Iterations -----------------")
+    for b in range(batch_size):
+        output[b] = np.zeros([out_height * out_width, out_channels])
+        # Iterate over the filter height
+        for i in range(filter_height):
+            # Iterate over the filter width
+            for j in range(filter_width):
+                
+                # Shift the Input tensor by (i, j) to align with the filter's current position
+                input_shifted = shift_cpu(transposed_X[b], input_shifted, i, j, X.shape, W.shape)
+
+                print(f"\n----- Batch : {b} -----")
+                print("Shifted Input for filter indices : (", i, j, ")")
+                print(input_shifted)
+                print()
+
+                # Getting the right set of weights across (output_channels, input_channels)
+                weight_sliced = transposed_W[:, i * filter_width + j]
+                weight_sliced_T = np.transpose(weight_sliced)
+
+                print("Weight slice for filter indices : (", i, j, ")")
+                print(weight_sliced_T)
+                print()
+                print(f"\n-----------------------")
+
+                # Perform matrix multiplication between the input and the weights from the filter slice
+                output[b] += np.matmul(input_shifted, weight_sliced_T)
+    print("\n----------------- End Iterations -----------------")
+
+    print("\n------- ")
+    print("Output before transposing and reshaping : ")
+    print(output)
+    print("------- \n")
+
+    output_T = np.transpose(output, (0, 2, 1))
+    output = output_T.reshape((batch_size, out_channels, out_height, out_width))
+
+    print("\n------- ")
+    print("Output Matrix (CPU Implementation): ", out_height, out_width)
+    print(output)
+    print("------- \n")
+
+    return output
+
+################################################################################################################
