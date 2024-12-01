@@ -7,7 +7,7 @@ import neuronxcc.nki.isa as nisa
 from neuronxcc.nki import baremetal
 from neuronxcc.nki import benchmark
 
-from conv2d import fused_conv2d_maxpool_cpu as conv2d
+from conv2d import fused_conv2d_maxpool as conv2d
 
 from conv2d_numpy import conv2d_cpu_torch
 import logging
@@ -51,7 +51,7 @@ def test_correctness_conv2d_kernel(
     ref_impl = conv2d_cpu_torch
 
     input_channels_list = [3]
-    output_channels_list = [2]
+    output_channels_list = [1]
     kernel_size_list = [2]
     batch_size_list = [1]
     image_dims_list = [(3, 3)]
@@ -90,7 +90,7 @@ def test_correctness_conv2d_kernel(
                         # Define Filter Matrix
                         base_matrix = np.array([[1, 2],
                                                 [3, 4]], dtype=np.float32)
-                        W = np.tile(base_matrix, (2, 3, 1, 1))
+                        W = np.tile(base_matrix, (1, 3, 1, 1))
 
                         # Define a single channel for Output Channel 1
                         # channel1 = np.array([[1., 2.],

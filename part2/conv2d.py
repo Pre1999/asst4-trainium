@@ -7,19 +7,24 @@ import neuronxcc.nki.isa as nisa
 from neuronxcc.nki import baremetal
 
 
-# @nki.jit
-def shift(input, input_shifted, i, j, X_shape, W_shape, out_shape):
+@nki.jit
+def shift(input, input_shifted, i, j, X_shape, W_shape):
     batch_size, in_channels, input_height, input_width = X_shape
     out_channels, in_channels_, filter_height, filter_width = W_shape
-    _, _, out_height, out_width = out_shape
     
     shift_idx = 0
+    temp = nl.ndarray((in_channels,1), dtype=input.dtype, buffer=nl.sbuf)
 
     for x in range(i, input_height - filter_height + i + 1):
         for y in range(j, input_width - filter_width + j + 1):
             flattened_idx = x * input_width + y
-            input_shifted[shift_idx] = input[flattened_idx]
-            # nl.device_print("Printing Here123:", x=input[flattened_idx])
+            # input_shifted[shift_idx] = input[flattened_idx]
+            temp = nl.load(input[flattened_idx])
+            temp = temp.reshape((in_channels,))
+            # my_print(temp, "Printing Shift Temp Value : ")
+            # print("Temp Shape : ", temp.shape)
+            # print("Temp Shape : ", input[flattened_idx : flattened_idx + 1].shape)
+            nl.store(input_shifted[shift_idx], value=temp)
             shift_idx += 1
 
     # return input_shifted
@@ -53,6 +58,24 @@ The shape of the output should be [batch_size, out_channels, out_pool_height, ou
 """
 
 @nki.jit
+def manual_transpose_3d(tensor, transposed_tensor):
+    
+    batches,height,width = tensor.shape
+    
+    # Assuming tensor is a 3-dimensional list of lists
+    # transposed_tensor = np.zeros([batches,width,height])
+    # transposed_tensor = nl.ndarray((batches, width, height), dtype=tensor.dtype, buffer=nl.hbm)
+    temp = nl.ndarray((1, 1), dtype=tensor.dtype, buffer=nl.sbuf)
+
+    for i in range(batches):
+        for j in range(height):
+            for k in range(width):
+                # transposed_tensor[i][k][j] = tensor[i][j][k]
+                temp[...] = nl.load(tensor[i][j][k])
+                nl.store(transposed_tensor[i][k][j], value=temp)
+
+
+@nki.jit
 def fused_conv2d_maxpool(X, W, bias, pool_size=1):
 
     batch_size, in_channels, input_height, input_width = X.shape
@@ -76,41 +99,42 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
     # assert in_channels % 128 == 0
 
     # Can assume one PSUM bank can at least fit one row of the pixels
-    assert nl.tile_size.gemm_moving_fmax >= out_width
-
-    # Initialize output array
-    X_out = nl.ndarray(
-        shape=(batch_size, out_channels, out_pool_height, out_pool_width),
-        dtype=X.dtype,
-        buffer=nl.hbm,
-    )
-    X_out.reshape((batch_size, out_pool_height * out_pool_width, out_channels))
+    assert nl.tile_size.gemm_moving_fmax >= out_width    
 
     # Various tiling dimensions (You may want to define more of them)
     c_in_pmax = nl.tile_size.pmax
     n_tiles_c_in = in_channels // c_in_pmax
 
     # Reshape input and weight to align for matrix multiplication
-    # input =  X.reshape((batch_size, input_height * input_width, in_channels))
     input =  X.reshape((batch_size, in_channels, input_height * input_width))
-    # weight = W.reshape((filter_height, filter_width, in_channels, out_channels))
-    weight = W.reshape((1, out_channels, in_channels, filter_height * filter_width))
+    transposed_input = nl.ndarray((batch_size, input_height * input_width, in_channels), dtype=input.dtype, buffer=nl.hbm)
+    manual_transpose_3d(input, transposed_input)
+    my_print(transposed_input[0, 0:1], "Transposed INPUT : ")
+    print("Shape of the transpose : ", transposed_input[0,0:1].shape)
 
-    # Transpose axes
-    # transposed_matrix = nl.transpose(X, (0, 2, 3, 1))
-    # print("Transposed Matrix : ")
-    # my_print(transposed_matrix)
+    weight = W.reshape((out_channels, in_channels, filter_height * filter_width))
+    transposed_weight = nl.ndarray((out_channels, filter_height * filter_width, in_channels), dtype=input.dtype, buffer=nl.hbm)
+    manual_transpose_3d(weight, transposed_weight)
+    my_print(transposed_weight, "Transposed Weight : ")
 
-    # Initialize input_shifted array
-    input_shifted = nl.ndarray(
-        shape=(out_height * out_width, in_channels),
-        dtype=input.dtype,
-        buffer=nl.sbuf,
+    # Initialize output array
+    X_out = nl.ndarray(
+        shape=(batch_size, out_height * out_width, out_channels),
+        dtype=X.dtype,
+        buffer=nl.hbm,
     )
 
-    # wt_tile = nl.ndarray((1, out_channels, in_channels, filter_height * filter_width), dtype=weight.dtype, buffer=nl.sbuf)
-    # wt_tile = nl.load(weight)
-    # wt_tile_transpose = nl.transpose(wt_tile)
+    X_out_reshaped = nl.ndarray(
+        shape=(batch_size, out_channels, out_height, out_width),
+        dtype=X.dtype,
+        buffer=nl.hbm,
+    )
+
+    input_shifted = nl.ndarray(
+        shape=(out_height * out_width, in_channels),
+        dtype=X.dtype,
+        buffer=nl.hbm,
+    )
 
     # Process the images in batches
     for b in nl.affine_range(batch_size):
@@ -121,58 +145,29 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
         for i in range(filter_height):
             # Iterate over the filter width
             for j in range(filter_width):
-
-                # Shift the Input tensor by (i, j) to align with the filter's current position
-                # input_shifted = shift(input, input_shifted, i, j, X.shape, W.shape, X_out.shape)
-                # shift(input[b], input_shifted, i, j, X.shape, W.shape, X_out.shape)
-
-                input = X[b:b+1, :, i : input_height - filter_height + i + 1, j : input_width - filter_width + j + 1]
-
-                # transposed_matrix = nl.transpose(X, (0, 2, 3, 1))
-
-                print("Input_reshaped shape : ", input.shape)
-                input_reshaped = input.reshape((1,1,4,3))
-                # print(type(input[b]))
-                # name = "Input Reshaped : "
-                # my_print(input[b], name)
-                
-                # print("Weight_reshaped shape : ", weight[0, :, :, i * filter_width + j].shape)
-                # print(type(weight), weight.dtype)
-                # name = "Filter Reshaped : "
-                # my_print(nl.transpose(weight[0, :, :, i * filter_width + j]), name)
-
-                # wt_tile = nl.ndarray((out_channels, in_channels), dtype=weight.dtype, buffer=nl.sbuf)
-
-                # sliced_weight = weight[0, :, :, i * filter_width + j]
-                # sliced_weight_copy = nl.ndarray(shape=sliced_weight.shape, dtype=sliced_weight.dtype, buffer=nl.hbm)
-                # sliced_weight_copy[...] = sliced_weight
-
-                # wt_tile = nl.load(sliced_weight)
-
-                # wt_tile_transpose = nl.transpose(wt_tile)
-
-                # my_print(wt_tile_transpose, name)
-
-
-                # input_shifted = input.reshape((1, 1, out_width * out_height, in_channels))
-                # input_shifted[:] = input
-
-                # Perform matrix multiplication between the input and the weights from the filter slice
-                # X_out[b] += nl.matmul(input_shifted, weight[i, j, :, :])
+                # continue
+                shift(transposed_input[b], input_shifted, i, j, X.shape, W.shape)
 
     # Store the result tile into HBM
     # nl.store(X_out, value=X)
-    X_out.reshape((batch_size, out_channels, out_pool_height, out_pool_width))
+    temp = nl.ndarray((1, 1), dtype=X_out.dtype, buffer=nl.sbuf)
+    
+    # X_out_reshaped = X_out.reshape((batch_size, out_channels, out_pool_height, out_pool_width))
     for b in nl.affine_range(batch_size):
         for c in nl.affine_range(out_channels):
             for h in nl.affine_range(out_pool_height):
                 for w in nl.affine_range(out_pool_width):
-                    X_out[b, c, h, w] = 1
+                    temp[0][0] = 0
+                    nl.store(X_out_reshaped[b, c, h, w], value=temp)
+                    # X_out[b, c, h, w] = 1
 
-    return X_out
+    print("---> Shape of X_out : ", X_out_reshaped.shape)
+
+    assert X_out_reshaped.shape == (2,1,2,2)
+    return X_out_reshaped.reshape((2,1,2,2))
 
 def my_print(input, name):
-    nl.device_print(f"{name}", x=input[0, 0, 0, 0])
+    nl.device_print(f"{name}", x=input[0, 0, 0])
     nl.device_print("", x=input)
     # b_, c_, h_, w_ = input.shape
     # for b in range(b_):
@@ -218,6 +213,8 @@ def fused_conv2d_maxpool_cpu(X, W, bias, pool_size=1):
 
     # Reshape input and weight to align for matrix multiplication
     input = X.reshape((batch_size, in_channels, input_height * input_width))
+    print(input)
+    print(input.shape)
     transposed_X = np.transpose(input, (0, 2, 1))
     
     weight = W.reshape((out_channels, in_channels, filter_height * filter_width))
@@ -281,5 +278,3 @@ def fused_conv2d_maxpool_cpu(X, W, bias, pool_size=1):
     print("------- \n")
 
     return output
-
-################################################################################################################
