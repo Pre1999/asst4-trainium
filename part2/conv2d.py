@@ -6,6 +6,7 @@ import neuronxcc.nki.language as nl
 import neuronxcc.nki.isa as nisa
 from neuronxcc.nki import baremetal
 
+debug = False
 
 @nki.jit
 def shift(input, input_shifted, i, j, X_shape, W_shape):
@@ -17,7 +18,11 @@ def shift(input, input_shifted, i, j, X_shape, W_shape):
     for x in nl.affine_range(i, input_height - filter_height + i + 1):
         for y in nl.affine_range(j, input_width - filter_width + j + 1):
             flattened_idx = x * input_width + y
-            shift_idx = (x-i) * filter_width + (y-j)
+            shift_idx = (x-i) * (input_width - filter_width + 1) + (y-j)
+            # my_print_generic("X : ", x)
+            # my_print_generic("Y : ", y)
+            # my_print_generic("shift_idx : ", shift_idx)
+            # my_print_generic(shift_idx)
             # my_print_2D(input[:, flattened_idx], "Spliced Input : ")
             input_shifted[:, shift_idx] = input[:, flattened_idx]
             # my_print_2D(input_shifted[:, shift_idx], "Shifted Input : ")
@@ -77,9 +82,6 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
     out_channels, in_channels_, filter_height, filter_width = W.shape
     out_channels_ = bias.shape[0]
 
-    # print(X.shape)
-    # print(X)
-
     assert (
         in_channels_ == in_channels and out_channels_ == out_channels
     ), f"Shape mismatch. {in_channels}, {in_channels_}, {out_channels}, {out_channels_}"
@@ -102,16 +104,16 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
 
     # Reshape input and weight to align for matrix multiplication
     input =  X.reshape((batch_size, in_channels, input_height * input_width))
-    # transposed_input = nl.ndarray((batch_size, input_height * input_width, in_channels), dtype=input.dtype, buffer=nl.hbm)
-    # manual_transpose_3d(input, transposed_input)
-    my_print(input, "INPUT : ")
-    print("Shape of the INPUT : ", input.shape)
+    
+    if debug:
+        my_print(input, "INPUT : ")
+        print("Shape of the INPUT : ", input.shape)
 
     weight = W.reshape((out_channels, in_channels, filter_height * filter_width))
-    # transposed_weight = nl.ndarray((out_channels, filter_height * filter_width, in_channels), dtype=input.dtype, buffer=nl.hbm)
-    # manual_transpose_3d(weight, transposed_weight)
-    my_print(weight, "Weight : ")
-    print("Shape of the Wts : ", weight.shape)
+    
+    if debug:
+        my_print(weight, "Weight : ")
+        print("Shape of the Wts : ", weight.shape)
 
     # Initialize output array
     X_out = nl.ndarray(
@@ -126,9 +128,11 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
         buffer=nl.hbm,
     )
 
-    PARTITION_DIM = min(in_channels, 128)
+    INPUT_PARTITION_DIM = min(in_channels, 128)
     FREE_DIM = min(input_height * input_width, 512)
     FREE_DIM_shifted = min(out_height * out_width, 512)
+
+    WT_PARTITION_DIMENSION = min(out_channels, 128)
 
     TILE_M = min(out_channels, nl.tile_size.gemm_stationary_fmax)  # 128
     TILE_K = nl.tile_size.pmax  # 128
@@ -139,30 +143,38 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
         # TODO: Perform the convolution of X[b] with the weights W and bias b, followed by a maxpool
         # and store the result in X_out[b]
 
-        res_psum = nl.zeros((TILE_M, TILE_N), dtype=nl.float32, buffer=nl.psum)
+        for out_b in range((out_channels + WT_PARTITION_DIMENSION - 1) // WT_PARTITION_DIMENSION):
 
-        # Iterate over the filter height
-        for i in range(filter_height):
-            # Iterate over the filter width
-            for j in range(filter_width):
-                input_tile = nl.ndarray((PARTITION_DIM, FREE_DIM), dtype=input.dtype, buffer=nl.sbuf)
-                input_shifted_tile = nl.ndarray((PARTITION_DIM, FREE_DIM_shifted), dtype=input.dtype, buffer=nl.sbuf)
-                weight_tile = nl.ndarray((out_channels, in_channels, filter_height * filter_width), dtype=input.dtype, buffer=nl.sbuf)
+            res_psum = nl.zeros((TILE_M, TILE_N), dtype=nl.float32, buffer=nl.psum)
+            # Iterate over the filter height
+            for i in range(filter_height):
+                # Iterate over the filter width
+                for j in range(filter_width):
+                    for in_b in range((in_channels + INPUT_PARTITION_DIM - 1) // INPUT_PARTITION_DIM):
 
-                input_tile = nl.load(input[b])
-                input_shifted_tile = shift(input_tile, input_shifted_tile, i, j, X.shape, W.shape)
-                my_print_2D(input_shifted_tile, "Input Shifted Tile : ")
+                        input_tile = nl.ndarray((INPUT_PARTITION_DIM, FREE_DIM), dtype=input.dtype, buffer=nl.sbuf)
+                        input_shifted_tile = nl.ndarray((INPUT_PARTITION_DIM, FREE_DIM_shifted), dtype=input.dtype, buffer=nl.sbuf)
+                        weight_tile = nl.ndarray((WT_PARTITION_DIMENSION, INPUT_PARTITION_DIM, filter_height * filter_width), dtype=input.dtype, buffer=nl.sbuf)
 
-                weight_tile = nl.load(weight)
-                my_print_2D(weight_tile[:,:,i * filter_width + j], "Weight Tile : ")
+                        input_tile = nl.load(input[b, in_b * INPUT_PARTITION_DIM : (in_b+1) * INPUT_PARTITION_DIM])
+                        # my_print_generic("i: ", i)
+                        # my_print_generic("j: ", j)
+                        input_shifted_tile = shift(input_tile, input_shifted_tile, i, j, X.shape, W.shape)
+                        if debug:
+                            my_print_2D(input_shifted_tile, "Input Shifted Tile : ")
 
-                res_psum += nl.matmul(weight_tile[:,:,i * filter_width + j], input_shifted_tile)
+                        weight_tile = nl.load(weight[out_b * WT_PARTITION_DIMENSION : (out_b+1) * WT_PARTITION_DIMENSION])
+                        if debug:
+                            my_print_2D(weight_tile[:,:,i * filter_width + j], "Weight Tile : ")
+
+                        res_psum += nl.matmul(weight_tile[:, in_b * INPUT_PARTITION_DIM : (in_b+1) * INPUT_PARTITION_DIM, i * filter_width + j], input_shifted_tile)
         
-        nl.store(X_out_mul[b], value=res_psum.reshape((out_channels, out_height, out_width)))
+            nl.store(X_out_mul[b, out_b * WT_PARTITION_DIMENSION : (out_b+1) * WT_PARTITION_DIMENSION], value=res_psum.reshape((WT_PARTITION_DIMENSION, out_height, out_width)))
 
-        my_print_2D(X_out_mul[b], "X_OUT : ")
+        if debug :
+            my_print_2D(X_out_mul[b], "X_OUT : ")
 
-        print("Shape of Xout : ", X_out_mul.shape)
+            print("Shape of Xout : ", X_out_mul.shape)
 
     # # Store the result tile into HBM
     # # nl.store(X_out, value=X)
@@ -182,6 +194,7 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
     return X_out_mul
 
 def my_print(input, name):
+
     nl.device_print(f"{name}", x=input[0, 0, 0])
     nl.device_print("", x=input)
     # b_, c_, h_, w_ = input.shape
@@ -198,8 +211,8 @@ def my_print_2D(input, name):
     nl.device_print(f"{name}", x=input[0, 0])
     nl.device_print("", x=input)
 
-def my_print_generic(input):
-    nl.device_print("", x=input)
+def my_print_generic(string, input):
+    nl.device_print(string, x=input)
 
 ############################################## CPU Implementation ##############################################
 
