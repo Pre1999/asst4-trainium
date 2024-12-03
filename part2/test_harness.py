@@ -58,9 +58,9 @@ def test_correctness_conv2d_kernel(
     pool_size = 2 if use_maxpool else 1
 
     if use_larger_images:
-        input_channels_list = [256]
-        output_channels_list = [256]
-        image_dims_list = [(224, 224)]
+        input_channels_list = [512]
+        output_channels_list = [512]
+        image_dims_list = [(256, 256)]
 
     for input_channels in input_channels_list:
         for output_channels in output_channels_list:
@@ -108,7 +108,7 @@ def test_correctness_conv2d_kernel(
 
                         # Combine the two output channels
                         # W = np.stack([output_channel1, output_channel2])
-                        print()
+                        # print()
                         print("Filter Matrix : ")
                         print(W)
                         print("\nShape : ", W.shape)
@@ -127,6 +127,8 @@ def test_correctness_conv2d_kernel(
                         out_ref = ref_impl(*args, **kwargs)
                         
                         print("Shapes of output : ", out.shape, " | Ref Shape : ", out_ref.shape)
+
+                        print("Out Ref : ", out_ref)
 
                         if not np.allclose(out, out_ref):
                             print(
